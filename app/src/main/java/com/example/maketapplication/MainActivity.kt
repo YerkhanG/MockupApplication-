@@ -2,7 +2,6 @@ package com.example.maketapplication
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.PointF
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.view.inputmethod.EditorInfo
@@ -10,12 +9,17 @@ import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import com.example.maketapplication.databinding.ActivityMainBinding
 import com.yandex.mapkit.MapKitFactory
+import com.yandex.mapkit.RequestPoint
+import com.yandex.mapkit.RequestPointType
+import com.yandex.mapkit.directions.DirectionsFactory
+import com.yandex.mapkit.directions.driving.DrivingOptions
 import com.yandex.mapkit.directions.driving.DrivingRoute
+import com.yandex.mapkit.directions.driving.DrivingRouter
 import com.yandex.mapkit.directions.driving.DrivingSession
+import com.yandex.mapkit.directions.driving.VehicleOptions
+import com.yandex.mapkit.geometry.Geometry
 import com.yandex.mapkit.geometry.Point
 import com.yandex.mapkit.layers.ObjectEvent
-import com.yandex.mapkit.location.FilteringMode
-import com.yandex.mapkit.location.LocationListener
 import com.yandex.mapkit.map.CameraListener
 import com.yandex.mapkit.map.CameraPosition
 import com.yandex.mapkit.map.CameraUpdateReason
@@ -36,6 +40,7 @@ import com.yandex.runtime.Error
 import com.yandex.runtime.image.ImageProvider
 import com.yandex.runtime.network.NetworkError
 import com.yandex.runtime.network.RemoteError
+import java.lang.Integer.min
 
 class MainActivity : AppCompatActivity(), UserLocationObjectListener, DrivingSession.DrivingRouteListener, Session.SearchListener,
     CameraListener {
@@ -43,9 +48,20 @@ class MainActivity : AppCompatActivity(), UserLocationObjectListener, DrivingSes
     private lateinit var loc: UserLocationLayer
     private lateinit var searchManager : SearchManager
     private lateinit var searchSession: Session
+    val checkpointinterval = 3000
+
     private lateinit var mapView : MapView
-    private val START_LOCATION = Point(43.226667, 76.845202)
-    private val END_LOCATION = Point(43.254418, 76.902173)
+    private val START_LOCATION = Point(43.246874, 78.896925)
+    private val END_LOCATION = Point(42.98443,  78.46577)
+    private val CENTER = Point(
+        (START_LOCATION.latitude + END_LOCATION.latitude)/2 ,
+        (START_LOCATION.longitude + END_LOCATION.longitude)/2
+    )
+    private var drivingRouter : DrivingRouter? = null
+    private var drivingSession : DrivingSession? = null
+    private lateinit var mapObjects : MapObjectCollection
+    val maxZoom = 13.0f // Maximum allowed zoom level
+    val minZoom = 7.0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,17 +69,15 @@ class MainActivity : AppCompatActivity(), UserLocationObjectListener, DrivingSes
 
         MapKitFactory.initialize(this)
 
-
-
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         requestLocationPermission()
         var mapkit = MapKitFactory.getInstance()
-        mapkit.resetLocationManagerToDefault()
         mapView = binding.mapview
+
         mapView.mapWindow.map.move(START_POSITION)
         loc = mapkit.createUserLocationLayer(mapView.mapWindow)
-        loc.isVisible = true
+        loc.isVisible = false
         loc.isHeadingEnabled= true
         loc.setObjectListener(this)
 
@@ -73,6 +87,9 @@ class MainActivity : AppCompatActivity(), UserLocationObjectListener, DrivingSes
 
 
         mapView.map.addCameraListener(this)
+        binding.geo.setOnClickListener{
+            mapView.map.move(CameraPosition(START_LOCATION,0f,0f,0f))
+        }
 
         binding.searchEdit.setOnEditorActionListener{ y, actionId , event ->
             if(actionId == EditorInfo.IME_ACTION_SEARCH){
@@ -80,6 +97,11 @@ class MainActivity : AppCompatActivity(), UserLocationObjectListener, DrivingSes
             }
             false
         }
+
+        drivingRouter = DirectionsFactory.getInstance().createDrivingRouter()
+        mapObjects = mapView.map.mapObjects.addCollection()
+
+        submitRequest()
     }
 
     private fun requestLocationPermission(){
@@ -133,23 +155,42 @@ class MainActivity : AppCompatActivity(), UserLocationObjectListener, DrivingSes
     override fun onObjectUpdated(p0: UserLocationView, p1: ObjectEvent) {
 
     }
+//    fun calculateCheckpointCoordinates(routeGeometry : Geometry, totalLength : Double , distance : Double ) : Point {
+//        val fraction =  distance / totalLength
+//        val numpol = routeGeometry.multiPolygon?.polygons?.size ?:0
+//        val polygonIndex = (numpol?.times(fraction))?.toInt()
+//        val startPoint = polygonIndex?.let { routeGeometry.multiPolygon?.polygons?.getOrNull(it) }
+//    }
+    private fun calculateLength(route : DrivingRoute): Double {
+        var length = 0.0
+        for(section in route.sections){
+            length += section.metadata.weight.distance.value
+        }
+        return length
+    }
+    override fun onDrivingRoutes(routes: MutableList<DrivingRoute>) {
+        val route = routes[0]
+        mapView.map.move(CameraPosition(START_LOCATION,0f,0f,0f))
+        mapObjects.addPolyline(route.geometry)
+        val totalLength = calculateLength(route)
+        val numOfCheckpoints = (totalLength/checkpointinterval).toInt()
+        for(i in 1..numOfCheckpoints){
 
-    override fun onDrivingRoutes(p0: MutableList<DrivingRoute>) {
-        TODO("Not yet implemented")
+        }
     }
 
     override fun onDrivingRoutesError(p0: Error) {
-        TODO("Not yet implemented")
+        var errorMessage = "Something went wrong"
+        Toast.makeText(this, errorMessage, Toast.LENGTH_SHORT)
     }
 
     override fun onSearchResponse(response: Response) {
         val mapObjects:MapObjectCollection = mapView.map.mapObjects
-        mapObjects.clear()
         for(searchResult in response.collection.children){
-            val resultLocation  = searchResult.obj!!.geometry[0].point!!
-            if(response!=null){
-                mapObjects.addPlacemark(resultLocation , ImageProvider.fromResource(this, R.drawable.img) )
-            }
+            val resultLocation  = searchResult.obj?.geometry?.get(0)?.point
+//            if(response!=null){
+//                mapObjects.addPlacemark(resultLocation , ImageProvider.fromResource(this, R.drawable.img) )
+//            }
         }
     }
 
@@ -167,11 +208,27 @@ class MainActivity : AppCompatActivity(), UserLocationObjectListener, DrivingSes
         map: Map,
         cameraPosition: CameraPosition,
         cameraUpdateReason: CameraUpdateReason,
-        finished: Boolean
-    ) {
+        finished: Boolean) {
+        if (cameraPosition.zoom > maxZoom) {
+            mapView.map.move(CameraPosition(cameraPosition.target, maxZoom, cameraPosition.azimuth, cameraPosition.tilt))
+        } else if (cameraPosition.zoom < minZoom) {
+            mapView.map.move(CameraPosition(cameraPosition.target, minZoom, cameraPosition.azimuth, cameraPosition.tilt))
+        }
         if(finished){
             submitQuery(binding.searchEdit.text.toString())
         }
+    }
+
+    private fun submitRequest(){
+        val drivingOptions = DrivingOptions()
+        val vehicleOptions = VehicleOptions()
+        val requestPoints : ArrayList<RequestPoint> = ArrayList()
+        requestPoints.add(RequestPoint(START_LOCATION, RequestPointType.WAYPOINT, null))
+        requestPoints.add(RequestPoint(END_LOCATION, RequestPointType.WAYPOINT, null))
+        drivingSession = drivingRouter?.requestRoutes(requestPoints, drivingOptions, vehicleOptions, this)
+        mapView.map.move(
+            CameraPosition(requestPoints[0].point, 10.0f, 150.0f, 0f)
+        )
     }
 }
 
